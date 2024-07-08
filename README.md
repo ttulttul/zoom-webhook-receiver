@@ -18,6 +18,7 @@ transcript.
 - Docker
 - Make (optional, for using Makefile commands)
 - Zoom account with webhook functionality enabled
+- Python 3.10 or higher (for local development and testing)
 
 ## Setup
 
@@ -27,9 +28,14 @@ transcript.
    cd zoom-webhook-handler
    ```
 
-2. Create a `.env` file in the project root and add your Zoom Webhook Secret Token:
+2. Create a `.env` file in the project root and add your Zoom Webhook Secret Token and other secrets:
    ```
    ZOOM_WEBHOOK_SECRET_TOKEN=your_zoom_webhook_secret_token_here
+   TRANSCRIPT_FORWARD_URL=your_zapier_webhook_url_here
+   TEST_TRANSCRIPT_URL=url_of_a_zoom_transcript_for_testing
+   TEST_TRANSCRIPT_BEARER=zoom_bearer_token_for_testing
+   CLAUDE_MODEL=anthropic_claude_model_name
+   ANTHROPIC_API_KEY=your_anthropic_key
    ```
 
 3. Build the Docker image:
@@ -77,6 +83,8 @@ This will send a simulated Zoom transcript-ready event to your local webhook han
 - `make rebuild`: Rebuild and restart the Docker container
 - `make logs`: View container logs
 - `make test-webhook`: Send a test webhook event
+- `make test-local`: Run tests in a local venv
+- `make test-local-verbose`: Same as `test-local` but with debug logging
 - `make clean`: Remove all Docker artifacts related to this project
 
 ## Project Structure

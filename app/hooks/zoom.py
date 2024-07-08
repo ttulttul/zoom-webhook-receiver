@@ -1,28 +1,31 @@
+import hashlib
+import hmac
 import os
 import logging
 import requests
 import textwrap
 
+import aiohttp
 import anthropic
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
-import hmac
-import hashlib
 from dotenv import load_dotenv
 
+# The setup function is invoked by some glue code to wire up
+# FastAPI endpoints to this plugin.
 def setup(app: FastAPI):
     @app.post("/zoom/transcript-ready")
     async def zoom_transcript_ready(request: Request):
+        "Called by Zoom when a transcript is ready for download"
         body = await request.json()
         
-        if body.get("event") == "endpoint.url_validation":
-            return handle_validation(body)
-        
-        if body.get("event") == "recording.transcript_completed":
-            return handle_transcript_ready(body)
-        
-        # Handle unexpected events
-        return JSONResponse(status_code=400, content={"error": "Unexpected event type"})
+        match body.get("event"):
+            case "endpoint.url_validation":
+                return await handle_validation(body)
+            case "recording.transcript_completed":
+                return await handle_transcript_ready(body)
+            case _:
+                raise HTTPException(status_code=400, detail=f"Unexpected event type: {body.get('event')}")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -144,16 +147,16 @@ def handle_validation(body):
         "encryptedToken": hashed_token
     })
 
-def handle_transcript_ready(body):
+async def handle_transcript_ready(body):
     try:
         # Extract relevant information
         download_token = body.get("download_token")
         recording_files = body["payload"]["object"]["recording_files"]
-        
+
         for file in recording_files:
             if file["file_type"] == "TRANSCRIPT":
                 download_url = file["download_url"]
-                
+
                 # Prepare the JSON payload for the forward request
                 forward_payload = {
                     "download_url": download_url,
@@ -162,34 +165,35 @@ def handle_transcript_ready(body):
                     "meeting_start_time": body["payload"]["object"]["start_time"],
                     "host_email": body["payload"]["object"]["host_email"]
                 }
-                
-                # Send the HTTPS POST request
+
+                # Send the HTTPS POST request asynchronously
                 if TRANSCRIPT_FORWARD_URL:
                     try:
-                        response = requests.post(TRANSCRIPT_FORWARD_URL, json=forward_payload)
-                        response.raise_for_status()
-                        logger.info(f"Successfully forwarded transcript details to {TRANSCRIPT_FORWARD_URL}")
-                    except requests.exceptions.RequestException as e:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(TRANSCRIPT_FORWARD_URL, json=forward_payload) as response:
+                                response.raise_for_status()
+                                logger.info(f"Successfully forwarded transcript details to {TRANSCRIPT_FORWARD_URL}")
+                    except aiohttp.ClientError as e:
                         logger.error(f"Failed to forward transcript details: {str(e)}")
-                        return JSONResponse(status_code=500, content={"error": "Failed to forward transcript details"})
+                        raise HTTPException(status_code=500, detail="Failed to forward transcript details")
                 else:
                     logger.warning("TRANSCRIPT_FORWARD_URL is not set. Skipping forwarding.")
-                
+
                 return JSONResponse(status_code=200, content={"status": "Transcript details processed"})
-        
+
         # If no transcript file was found
-        logger.warning("No transcript file was found in the webhook data: {body}")
-        return JSONResponse(status_code=404, content={"error": "No transcript file found in the webhook data"})
-    
+        logger.warning(f"No transcript file was found in the webhook data: {body}")
+        raise HTTPException(status_code=404, detail="No transcript file found in the webhook data")
+
     except KeyError as e:
         # Handle missing keys in the webhook data
         logger.error(f"Error processing webhook data: Missing key {str(e)}")
-        return JSONResponse(status_code=400, content={"error": f"Missing data in webhook: {str(e)}"})
-    
+        raise HTTPException(status_code=400, detail=f"Missing data in webhook: {str(e)}")
+
     except Exception as e:
         # Handle any other unexpected errors
         logger.error(f"Unexpected error processing webhook data: {str(e)}")
-        return JSONResponse(status_code=500, content={"error": "Internal server error"})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     import sys

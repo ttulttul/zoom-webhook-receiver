@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Read settings from .env
+source .env
+
 # URL of your webhook endpoint
 WEBHOOK_URL="http://localhost:8000/zoom/transcript-ready"
 
@@ -37,14 +40,14 @@ JSON_PAYLOAD=$(cat <<EOF
           "file_type": "TRANSCRIPT",
           "file_size": 142,
           "play_url": "https://example.com/recording/play/Qg75t7xZBtEbAkjdlgbfdngBBBB",
-          "download_url": "https://example.com/recording/download/Qg75t7xZBtEbAkjdlgbfdngBBBB",
+          "download_url": "$TEST_TRANSCRIPT_URL",
           "status": "completed",
           "recording_type": "audio_transcript"
         }
       ]
     }
   },
-  "download_token": "abJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJodHRwczovL2V2ZW50Lnpvb20udXMiLCJhY2NvdW50SWQiOiJNdDZzdjR1MFRBeVBrd2dzTDJseGlBIiwiYXVkIjoiaHR0cHM6Ly9vYXV0aC56b29tLnVzIiwibWlkIjoieFp3SEc0c3BRU2VuekdZWG16dnpiUT09IiwiZXhwIjoxNjI2MTM5NTA3LCJ1c2VySWQiOiJEWUhyZHBqclMzdWFPZjdkUGtrZzh3In0.a6KetiC6BlkDhf1dP4KBGUE1bb2brMeraoD45yhFx0eSSSTFdkHQnsKmlJQ-hdo9Zy-4vQw3rOxlyoHv583JyZ"
+  "download_token": "$TEST_TRANSCRIPT_BEARER"
 }
 EOF
 )

@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import os
 import logging
+import requests
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -17,6 +18,8 @@ app = FastAPI()
 
 # Get the Zoom Webhook Secret Token from environment variable
 ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN")
+# Get the endpoint URL for forwarding transcript details
+TRANSCRIPT_FORWARD_URL = os.getenv("TRANSCRIPT_FORWARD_URL")
 
 @app.get("/")
 async def root():
@@ -62,16 +65,31 @@ def handle_transcript_ready(body):
             if file["file_type"] == "TRANSCRIPT":
                 download_url = file["download_url"]
                 
-                # Log the download URL with the token (using Authorization header method)
-                logger.info(f"Transcript download URL: {download_url}")
-                logger.info(f"Use the following curl command to download the transcript:")
-                logger.info(f"curl --request GET --url {download_url} --header 'authorization: Bearer {download_token}' --header 'content-type: application/json'")
+                # Prepare the JSON payload for the forward request
+                forward_payload = {
+                    "download_url": download_url,
+                    "download_token": download_token,
+                    "meeting_topic": body["payload"]["object"]["topic"],
+                    "meeting_start_time": body["payload"]["object"]["start_time"],
+                    "host_email": body["payload"]["object"]["host_email"]
+                }
                 
-                # You can add your logic here to actually download and process the transcript
+                # Send the HTTPS POST request
+                if TRANSCRIPT_FORWARD_URL:
+                    try:
+                        response = requests.post(TRANSCRIPT_FORWARD_URL, json=forward_payload)
+                        response.raise_for_status()
+                        logger.info(f"Successfully forwarded transcript details to {TRANSCRIPT_FORWARD_URL}")
+                    except requests.exceptions.RequestException as e:
+                        logger.error(f"Failed to forward transcript details: {str(e)}")
+                        return JSONResponse(status_code=500, content={"error": "Failed to forward transcript details"})
+                else:
+                    logger.warning("TRANSCRIPT_FORWARD_URL is not set. Skipping forwarding.")
                 
-                return JSONResponse(status_code=200, content={"status": "Transcript URL logged"})
+                return JSONResponse(status_code=200, content={"status": "Transcript details processed"})
         
         # If no transcript file was found
+        logger.warning("No transcript file was found in the webhook data: {body}")
         return JSONResponse(status_code=404, content={"error": "No transcript file found in the webhook data"})
     
     except KeyError as e:

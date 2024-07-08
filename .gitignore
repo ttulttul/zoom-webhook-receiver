@@ -7,3 +7,4 @@
 # Swap files
 *.swp
 venv/
+__pycache__/

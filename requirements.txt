@@ -4,3 +4,4 @@ pydantic==2.4.2
 python-dotenv==1.0.0
 httpx==0.25.0
 requests==2.31.0
+anthropic

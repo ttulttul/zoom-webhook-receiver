@@ -1,0 +1,202 @@
+import os
+import logging
+import requests
+import textwrap
+
+import anthropic
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import hmac
+import hashlib
+from dotenv import load_dotenv
+
+def setup(app: FastAPI):
+    @app.post("/zoom/transcript-ready")
+    async def zoom_transcript_ready(request: Request):
+        body = await request.json()
+        
+        if body.get("event") == "endpoint.url_validation":
+            return handle_validation(body)
+        
+        if body.get("event") == "recording.transcript_completed":
+            return handle_transcript_ready(body)
+        
+        # Handle unexpected events
+        return JSONResponse(status_code=400, content={"error": "Unexpected event type"})
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def load_config():
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Load the Claude model and default to claude-3-5-sonnet-20240620
+    claude_model = os.getenv("CLAUDE_MODEL") or "claude-3-5-sonnet-20240620"
+    
+    # Get the Zoom Webhook Secret Token from environment variable
+    zoom_webhook_secret_token = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN")
+    
+    # Get the endpoint URL for forwarding transcript details
+    transcript_forward_url = os.getenv("TRANSCRIPT_FORWARD_URL")
+    
+    logger.info(f"Loaded configuration: CLAUDE_MODEL={claude_model}, "
+                f"ZOOM_WEBHOOK_SECRET_TOKEN={'set' if zoom_webhook_secret_token else 'not set'}, "
+                f"TRANSCRIPT_FORWARD_URL={transcript_forward_url}")
+    
+    return claude_model, zoom_webhook_secret_token, transcript_forward_url
+
+CLAUDE_MODEL, ZOOM_WEBHOOK_SECRET_TOKEN, TRANSCRIPT_FORWARD_URL = load_config()
+
+app = FastAPI()
+
+MEETING_SUMMARY_PROMPT = textwrap.dedent("""\
+    You are tasked with summarizing the management team's daily huddle at
+    MailChannels. This summary is crucial as it will be primarily read by the CEO,
+    who relies on it to stay informed about the company's daily operations and key
+    issues. Write the summary in the first person singular as if you observed the meeting.
+    Refer to individuals using their first name and use colloquial language. While
+    the content of the meeting is important, you have a friendly and collegial
+    relationship with the team and are on a first-name basis with everyone including
+    the CEO.
+
+    First, carefully read through the following meeting transcript:
+
+    <meeting_transcript>
+    {transcript}
+    </meeting_transcript>
+
+    Your goal is to create a concise summary of this meeting,
+    paying special attention to matters that seem to be of extreme importance to
+    the CEO. Follow these steps:
+
+    1. Identify key points discussed in the meeting, including:
+       - Major decisions made
+       - Important updates on ongoing projects
+       - Challenges or obstacles mentioned
+       - Achievements or milestones reached
+       - Action items assigned to team members
+
+    2. Pay particular attention to topics that are likely to be of high interest to the CEO, such as:
+       - Financial matters
+       - Strategic initiatives
+       - Major client issues or opportunities
+       - Significant operational changes
+       - Competitive landscape updates
+       - Issues relating to team morale
+
+    3. Summarize the meeting in a clear, concise manner. The summary should:
+       - Be no longer than 2 paragraphs
+       - Highlight the most critical information first
+       - Avoid unnecessary details or tangential discussions
+
+    4. Throughout the summary, prioritize information that aligns with known
+       CEO interests or concerns. If certain topics were emphasized or revisited
+       multiple times during the meeting, ensure they are prominently featured in the
+       summary.
+
+    6. Use a professional, clear, and direct tone in your writing. Avoid jargon
+       unless it's commonly used within the company. Be crisp; the CEO is short on time.
+    """)
+
+def summarize(transcript):
+    # Anthropic API automatically fetches the API key from ANTHROPIC_API_KEY in env.
+    client = anthropic.Anthropic()
+
+    message = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=4096,
+        temperature=0,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": MEETING_SUMMARY_PROMPT.format(transcript=transcript)
+                    }
+                ]
+            }
+        ]
+    )
+    return message.content
+
+# Get the Zoom Webhook Secret Token from environment variable
+ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN")
+# Get the endpoint URL for forwarding transcript details
+TRANSCRIPT_FORWARD_URL = os.getenv("TRANSCRIPT_FORWARD_URL")
+
+def handle_validation(body):
+    plain_token = body["payload"]["plainToken"]
+    
+    if not ZOOM_WEBHOOK_SECRET_TOKEN:
+        return JSONResponse(status_code=500, content={"error": "Zoom Webhook Secret Token not set"})
+    
+    hashed_token = hmac.new(
+        ZOOM_WEBHOOK_SECRET_TOKEN.encode('utf-8'),
+        plain_token.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    return JSONResponse(status_code=200, content={
+        "plainToken": plain_token,
+        "encryptedToken": hashed_token
+    })
+
+def handle_transcript_ready(body):
+    try:
+        # Extract relevant information
+        download_token = body.get("download_token")
+        recording_files = body["payload"]["object"]["recording_files"]
+        
+        for file in recording_files:
+            if file["file_type"] == "TRANSCRIPT":
+                download_url = file["download_url"]
+                
+                # Prepare the JSON payload for the forward request
+                forward_payload = {
+                    "download_url": download_url,
+                    "download_token": download_token,
+                    "meeting_topic": body["payload"]["object"]["topic"],
+                    "meeting_start_time": body["payload"]["object"]["start_time"],
+                    "host_email": body["payload"]["object"]["host_email"]
+                }
+                
+                # Send the HTTPS POST request
+                if TRANSCRIPT_FORWARD_URL:
+                    try:
+                        response = requests.post(TRANSCRIPT_FORWARD_URL, json=forward_payload)
+                        response.raise_for_status()
+                        logger.info(f"Successfully forwarded transcript details to {TRANSCRIPT_FORWARD_URL}")
+                    except requests.exceptions.RequestException as e:
+                        logger.error(f"Failed to forward transcript details: {str(e)}")
+                        return JSONResponse(status_code=500, content={"error": "Failed to forward transcript details"})
+                else:
+                    logger.warning("TRANSCRIPT_FORWARD_URL is not set. Skipping forwarding.")
+                
+                return JSONResponse(status_code=200, content={"status": "Transcript details processed"})
+        
+        # If no transcript file was found
+        logger.warning("No transcript file was found in the webhook data: {body}")
+        return JSONResponse(status_code=404, content={"error": "No transcript file found in the webhook data"})
+    
+    except KeyError as e:
+        # Handle missing keys in the webhook data
+        logger.error(f"Error processing webhook data: Missing key {str(e)}")
+        return JSONResponse(status_code=400, content={"error": f"Missing data in webhook: {str(e)}"})
+    
+    except Exception as e:
+        # Handle any other unexpected errors
+        logger.error(f"Unexpected error processing webhook data: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+if __name__ == "__main__":
+    import sys
+    sample_transcript = sys.stdin.read().strip()
+
+    if not sample_transcript:
+        print("Provide a transcript on standard input")
+    else:
+        summary = summarize(sample_transcript)
+        print(summary)

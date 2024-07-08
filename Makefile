@@ -2,6 +2,8 @@
 DOCKER_IMAGE_NAME = personal-webhooks
 DOCKER_IMAGE_TAG = latest
 DOCKER_CONTAINER_NAME = personal-webhooks-container
+VENV_NAME = venv
+LOG_LEVEL = INFO  # Can be changed to DEBUG for more verbose output
 
 # Colors for output
 COLOR_RESET = \033[0m
@@ -67,6 +69,25 @@ logs:
 test:
 	@echo "$(COLOR_INFO)Running tests in Docker container $(DOCKER_CONTAINER_NAME)...$(COLOR_RESET)"
 	@docker exec -it $(DOCKER_CONTAINER_NAME) pytest || echo "$(COLOR_ERROR)Failed to run tests. Make sure the container is running.$(COLOR_RESET)"
+
+# Set up virtual environment, install requirements, and run tests locally with logging
+.PHONY: test-local
+test-local:
+	@echo "$(COLOR_INFO)Setting up virtual environment and running tests locally...$(COLOR_RESET)"
+	@python3 -m venv $(VENV_NAME) || (echo "$(COLOR_ERROR)Failed to create virtual environment. Make sure python3-venv is installed.$(COLOR_RESET)" && exit 1)
+	@. $(VENV_NAME)/bin/activate && \
+		pip install -r requirements.txt && \
+		PYTHONPATH=$$PYTHONPATH:$$(pwd):$$(pwd)/app \
+		LOG_LEVEL=$(LOG_LEVEL) \
+		pytest -s -o log_cli=true -o log_cli_level=$(LOG_LEVEL) tests/ 2>&1 && \
+		deactivate || \
+		(echo "$(COLOR_ERROR)Failed to run tests. Check the output above for details.$(COLOR_RESET)" && exit 1)
+	@echo "$(COLOR_INFO)Local tests completed.$(COLOR_RESET)"
+
+# Add a new target for verbose testing
+.PHONY: test-local-verbose
+test-local-verbose:
+	@$(MAKE) test-local LOG_LEVEL=DEBUG
 
 # Clean up: stop and remove container, and remove image
 .PHONY: clean

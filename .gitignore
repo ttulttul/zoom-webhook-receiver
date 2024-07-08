@@ -1,0 +1,9 @@
+# Existing .gitignore content
+...
+
+# Environment variables
+.env
+
+# Swap files
+*.swp
+venv/

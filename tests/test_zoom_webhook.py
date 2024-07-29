@@ -1,16 +1,25 @@
-import pytest
-from fastapi.testclient import TestClient
-from app.main import app
-import os
-import responses
 import json
+import os
+
+from aioresponses import aioresponses
+from app.main import app
+from dotenv import load_dotenv
+from fastapi.testclient import TestClient
+import pytest
+import responses
 
 client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_env_vars():
-    os.environ['ZOOM_WEBHOOK_SECRET_TOKEN'] = 'test_secret_token'
-    os.environ['TRANSCRIPT_FORWARD_URL'] = 'https://hooks.zapier.com/hooks/catch/6470/2bivqdk/'
+    load_dotenv()
+
+async def fetch_transcript(download_url, download_token):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(download_url, headers={"Authorization": f"Bearer {download_token}"}) as response:
+            response.raise_for_status()
+            transcript_content = await response.text()
+            return transcript_content
 
 @responses.activate
 def test_zoom_webhook_transcript_ready():
@@ -24,13 +33,13 @@ def test_zoom_webhook_transcript_ready():
 
     payload = {
         "event": "recording.transcript_completed",
-        "download_token": "test_download_token",
+        "download_token": os.getenv('TEST_TRANSCRIPT_BEARER'),
         "payload": {
             "object": {
                 "recording_files": [
                     {
                         "file_type": "TRANSCRIPT",
-                        "download_url": "https://example.com/transcript.vtt"
+                        "download_url": os.getenv('TEST_TRANSCRIPT_URL')
                     }
                 ],
                 "topic": "Test Meeting",
@@ -45,10 +54,10 @@ def test_zoom_webhook_transcript_ready():
 
     # Check that the forward request was made correctly
     assert len(responses.calls) == 1
-    assert responses.calls[0].request.url == 'https://hooks.zapier.com/hooks/catch/6470/2bivqdk/'
+    assert responses.calls[0].request.url == os.getenv('TRANSCRIPT_FORWARD_URL')
     forward_payload = json.loads(responses.calls[0].request.body)
-    assert forward_payload['download_url'] == "https://example.com/transcript.vtt"
-    assert forward_payload['download_token'] == "test_download_token"
+    assert forward_payload['download_url'] == os.getenv('TEST_TRANSCRIPT_URL')
+    assert forward_payload['download_token'] == os.getenv('TEST_TRANSCRIPT_BEARER')
     assert forward_payload['meeting_topic'] == "Test Meeting"
     assert forward_payload['meeting_start_time'] == "2023-07-08T10:00:00Z"
     assert forward_payload['host_email'] == "host@example.com"

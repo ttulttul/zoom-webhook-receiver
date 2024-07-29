@@ -21,7 +21,7 @@ def setup(app: FastAPI):
         
         match body.get("event"):
             case "endpoint.url_validation":
-                return await handle_validation(body)
+                return handle_validation(body)
             case "recording.transcript_completed":
                 return await handle_transcript_ready(body)
             case _:
@@ -31,12 +31,24 @@ def setup(app: FastAPI):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Provide a test transcript for testing purposes
+TEST_TRANSCRIPT="""
+Ken: Hey good morning everyone. This is a great day isn't it?
+
+Scott: Yes, I'm so keen to get going on that new project.
+
+Ken: Yes I am happy about that.
+
+Des: I think we should paint the office walls brown."""
+
 def load_config():
     # Load environment variables from .env file
     load_dotenv()
     
     # Load the Claude model and default to claude-3-5-sonnet-20240620
     claude_model = os.getenv("CLAUDE_MODEL") or "claude-3-5-sonnet-20240620"
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    anthropic_api_url = os.getenv("ANTHROPIC_API_URL")
     
     # Get the Zoom Webhook Secret Token from environment variable
     zoom_webhook_secret_token = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN")
@@ -48,9 +60,9 @@ def load_config():
                 f"ZOOM_WEBHOOK_SECRET_TOKEN={'set' if zoom_webhook_secret_token else 'not set'}, "
                 f"TRANSCRIPT_FORWARD_URL={transcript_forward_url}")
     
-    return claude_model, zoom_webhook_secret_token, transcript_forward_url
+    return anthropic_api_key, anthropic_api_url, claude_model, zoom_webhook_secret_token, transcript_forward_url
 
-CLAUDE_MODEL, ZOOM_WEBHOOK_SECRET_TOKEN, TRANSCRIPT_FORWARD_URL = load_config()
+ANTHROPIC_API_KEY, ANTHROPIC_API_URL, CLAUDE_MODEL, ZOOM_WEBHOOK_SECRET_TOKEN, TRANSCRIPT_FORWARD_URL = load_config()
 
 app = FastAPI()
 
@@ -103,15 +115,18 @@ MEETING_SUMMARY_PROMPT = textwrap.dedent("""\
        unless it's commonly used within the company. Be crisp; the CEO is short on time.
     """)
 
-def summarize(transcript):
-    # Anthropic API automatically fetches the API key from ANTHROPIC_API_KEY in env.
-    client = anthropic.Anthropic()
+async def summarize(transcript: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+    }
 
-    message = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=4096,
-        temperature=0,
-        messages=[
+    payload: Dict[str, Any] = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 4096,
+        "temperature": 0,
+        "messages": [
             {
                 "role": "user",
                 "content": [
@@ -122,8 +137,15 @@ def summarize(transcript):
                 ]
             }
         ]
-    )
-    return message.content
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(ANTHROPIC_API_URL, json=payload, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data['content'][0]['text']
+            else:
+                raise Exception(f"API request failed with status {response.status}: {await response.text()}")
 
 # Get the Zoom Webhook Secret Token from environment variable
 ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN")
@@ -154,32 +176,49 @@ async def handle_transcript_ready(body):
         recording_files = body["payload"]["object"]["recording_files"]
 
         for file in recording_files:
-            if file["file_type"] == "TRANSCRIPT":
+            transcript_content = ""
+            
+            if file["id"] == "TESTING123":
+                logger.info("sending test transcript")
+                transcript_content = TEST_TRANSCRIPT
+                
+            elif file["file_type"] == "TRANSCRIPT":
                 download_url = file["download_url"]
 
-                # Prepare the JSON payload for the forward request
-                forward_payload = {
-                    "download_url": download_url,
-                    "download_token": download_token,
-                    "meeting_topic": body["payload"]["object"]["topic"],
-                    "meeting_start_time": body["payload"]["object"]["start_time"],
-                    "host_email": body["payload"]["object"]["host_email"]
-                }
+                # Download the transcript file
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(download_url, headers={"Authorization": f"Bearer {download_token}"}) as response:
+                        response.raise_for_status()
+                        transcript_content = await response.text()
+            else:
+                logger.error("can't handle this type of file object: {file}")
+                continue
 
-                # Send the HTTPS POST request asynchronously
-                if TRANSCRIPT_FORWARD_URL:
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(TRANSCRIPT_FORWARD_URL, json=forward_payload) as response:
-                                response.raise_for_status()
-                                logger.info(f"Successfully forwarded transcript details to {TRANSCRIPT_FORWARD_URL}")
-                    except aiohttp.ClientError as e:
-                        logger.error(f"Failed to forward transcript details: {str(e)}")
-                        raise HTTPException(status_code=500, detail="Failed to forward transcript details")
-                else:
-                    logger.warning("TRANSCRIPT_FORWARD_URL is not set. Skipping forwarding.")
+            # Summarize the transcript:
+            transcript_summary = await summarize(transcript_content)
 
-                return JSONResponse(status_code=200, content={"status": "Transcript details processed"})
+            # Prepare the JSON payload for the forward request
+            forward_payload = {
+                "transcript_summary": transcript_summary,
+                "meeting_topic": body["payload"]["object"]["topic"],
+                "meeting_start_time": body["payload"]["object"]["start_time"],
+                "host_email": body["payload"]["object"]["host_email"]
+            }
+
+            # Send the HTTPS POST request asynchronously
+            if TRANSCRIPT_FORWARD_URL:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(TRANSCRIPT_FORWARD_URL, json=forward_payload) as response:
+                            response.raise_for_status()
+                            logger.info(f"Successfully forwarded transcript content to {TRANSCRIPT_FORWARD_URL}")
+                except aiohttp.ClientError as e:
+                    logger.error(f"Failed to forward transcript content: {str(e)}")
+                    raise HTTPException(status_code=500, detail="Failed to forward transcript content")
+            else:
+                logger.warning("TRANSCRIPT_FORWARD_URL is not set. Skipping forwarding.")
+
+            return JSONResponse(status_code=200, content={"status": "Transcript content processed"})
 
         # If no transcript file was found
         logger.warning(f"No transcript file was found in the webhook data: {body}")
@@ -189,6 +228,11 @@ async def handle_transcript_ready(body):
         # Handle missing keys in the webhook data
         logger.error(f"Error processing webhook data: Missing key {str(e)}")
         raise HTTPException(status_code=400, detail=f"Missing data in webhook: {str(e)}")
+
+    except aiohttp.ClientError as e:
+        # Handle errors related to downloading the transcript
+        logger.error(f"Error downloading transcript: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to download transcript")
 
     except Exception as e:
         # Handle any other unexpected errors

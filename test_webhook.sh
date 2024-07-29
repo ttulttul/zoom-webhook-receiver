@@ -17,7 +17,7 @@ JSON_PAYLOAD=$(cat <<EOF
   "payload": {
     "account_id": "AAAAAABBBB",
     "object": {
-      "id": 1234567890,
+      "id": "TESTING123",
       "uuid": "4444AAAiAAAAAiAiAiiAii==",
       "host_id": "x1yCzABCDEfg23HiJKl4mN",
       "account_id": "x1yCzABCDEfg23HiJKl4mN",
@@ -33,21 +33,21 @@ JSON_PAYLOAD=$(cat <<EOF
       "recording_count": 1,
       "recording_files": [
         {
-          "id": "ed6c2f27-2ae7-42f4-b3d0-835b493e4fa8",
+          "id": "TESTING123",
           "meeting_id": "098765ABCD",
           "recording_start": "2021-03-23T22:14:57Z",
           "recording_end": "2021-03-23T23:15:41Z",
           "file_type": "TRANSCRIPT",
           "file_size": 142,
           "play_url": "https://example.com/recording/play/Qg75t7xZBtEbAkjdlgbfdngBBBB",
-          "download_url": "$TEST_TRANSCRIPT_URL",
+          "download_url": "https://example.com/download/blahblah",
           "status": "completed",
           "recording_type": "audio_transcript"
         }
       ]
     }
   },
-  "download_token": "$TEST_TRANSCRIPT_BEARER"
+  "download_token": "testing123"
 }
 EOF
 )
